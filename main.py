@@ -11,11 +11,13 @@ import os
 import ast
 
 # ==============================
-# CONFIGURATION
+# CONFIGURATION (SECURE)
 # ==============================
 
-# 👉 Put your Gemini API key here
-GEMINI_API_KEY = "AIzaSyApJczvmEDEkQKQy9spSD5x8f-ET3qm4R0Y"
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+if not GEMINI_API_KEY:
+    raise ValueError("GEMINI_API_KEY environment variable not set")
 
 genai.configure(api_key=GEMINI_API_KEY)
 llm = genai.GenerativeModel("gemini-1.5-flash")
@@ -50,7 +52,7 @@ class QueryRequest(BaseModel):
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy"}
+    return {"status": "healthy", "total_assessments": len(df)}
 
 # ==============================
 # RECOMMEND ENDPOINT
@@ -59,23 +61,19 @@ def health_check():
 @app.post("/recommend")
 def recommend_assessments(request: QueryRequest):
 
-    query = request.query
+    query = request.query.strip()
 
-    # ------------------------------
-    # STEP 1: Retrieve top 20 via embeddings
-    # ------------------------------
+    if not query:
+        return {"error": "Query cannot be empty"}
 
+    # STEP 1: Embedding Retrieval
     query_embedding = model.encode([query])
     query_embedding = np.array(query_embedding)
 
-    distances, indices = index.search(query_embedding, 20)
-
+    distances, indices = index.search(query_embedding, 30)
     candidate_results = df.iloc[indices[0]]
 
-    # ------------------------------
-    # STEP 2: Prepare LLM Re-ranking
-    # ------------------------------
-
+    # STEP 2: LLM Re-ranking
     candidates_text = ""
 
     for _, row in candidate_results.iterrows():
@@ -91,28 +89,22 @@ def recommend_assessments(request: QueryRequest):
     Job Description:
     {query}
 
-    Below are 20 candidate SHL assessments.
+    Below are candidate SHL assessments.
 
     {candidates_text}
 
     Select the 10 MOST relevant assessments.
 
     Return ONLY a valid Python list of URLs.
-    Example:
-    ["url1", "url2", "url3"]
     """
 
     try:
         response = llm.generate_content(prompt)
         selected_urls = ast.literal_eval(response.text.strip())
     except:
-        # Fallback if LLM fails
         selected_urls = candidate_results["url"].tolist()[:10]
 
-    # ------------------------------
-    # STEP 3: Build Final Response
-    # ------------------------------
-
+    # STEP 3: Format Response
     final_results = df[df["url"].isin(selected_urls)].head(10)
 
     recommendations = []
@@ -129,3 +121,14 @@ def recommend_assessments(request: QueryRequest):
         })
 
     return {"recommended_assessments": recommendations}
+
+
+# ==============================
+# RENDER PORT HANDLING
+# ==============================
+
+if __name__ == "__main__":
+    import uvicorn
+
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
